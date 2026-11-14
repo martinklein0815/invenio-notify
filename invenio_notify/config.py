@@ -7,7 +7,8 @@ from invenio_i18n import lazy_gettext as _
 
 from invenio_notify.constants import WORKFLOW_STATUS_REQUEST_ENDORSEMENT, WORKFLOW_STATUS_TENTATIVE_ACCEPT, \
     WORKFLOW_STATUS_TENTATIVE_REJECT, WORKFLOW_STATUS_REJECT, WORKFLOW_STATUS_AVAILABLE, \
-    WORKFLOW_STATUS_REQUEST_REVIEW, WORKFLOW_STATUS_ACCEPT, WORKFLOW_STATUS_ANNOUNCE_REVIEW
+    WORKFLOW_STATUS_REQUEST_REVIEW, WORKFLOW_STATUS_ACCEPT, WORKFLOW_STATUS_ANNOUNCE_REVIEW, \
+    WORKFLOW_STATUS_SEND_FAILED
 from invenio_notify.workflows.endorsement import EndorsementWorkflow
 
 ###############################
@@ -78,6 +79,8 @@ NOTIFY_ENDORSEMENT_STATUS_LABELS = {
     WORKFLOW_STATUS_TENTATIVE_REJECT: {'label': 'Not endorsed in current form', 'labelClass': 'orange'},
     WORKFLOW_STATUS_REQUEST_ENDORSEMENT: 'Pending',
     WORKFLOW_STATUS_AVAILABLE: {'label': 'Available', 'labelClass': 'green'},
+    WORKFLOW_STATUS_SEND_FAILED: {'label': 'Sending failed', 'labelClass': 'red',
+                                  'labelTitle': 'The service answered with an error. You can send the request again.'},
 }
 """Configuration for endorsement status labels.
 
@@ -113,7 +116,8 @@ Examples:
 """
 
 
-NOTIFY_ENDORSEMENT_AVAILABLE_ACTORS = [WORKFLOW_STATUS_TENTATIVE_REJECT, WORKFLOW_STATUS_AVAILABLE]
+NOTIFY_ENDORSEMENT_AVAILABLE_ACTORS = [WORKFLOW_STATUS_TENTATIVE_REJECT, WORKFLOW_STATUS_AVAILABLE,
+                                      WORKFLOW_STATUS_SEND_FAILED]
 """
 Config variable for endorsement requests react component that determines
 which workflow states mean that an actor is available to request an endorsement
@@ -140,10 +144,13 @@ NOTIFY_REVIEW_STATUS_LABELS = {
     WORKFLOW_STATUS_TENTATIVE_REJECT: {'label': 'Not reviewed in current form', 'labelClass': 'orange'},
     WORKFLOW_STATUS_ANNOUNCE_REVIEW: {'label': 'Reviewed', 'labelClass': 'green'},
     WORKFLOW_STATUS_AVAILABLE: {'label': 'Available', 'labelClass': 'green'},
+    WORKFLOW_STATUS_SEND_FAILED: {'label': 'Sending failed', 'labelClass': 'red',
+                                  'labelTitle': 'The service answered with an error. You can send the request again.'},
 }
 """Labels for review request statuses, same format as NOTIFY_ENDORSEMENT_STATUS_LABELS."""
 
-NOTIFY_REVIEW_AVAILABLE_ACTORS = [WORKFLOW_STATUS_TENTATIVE_REJECT, WORKFLOW_STATUS_AVAILABLE]
+NOTIFY_REVIEW_AVAILABLE_ACTORS = [WORKFLOW_STATUS_TENTATIVE_REJECT, WORKFLOW_STATUS_AVAILABLE,
+                                  WORKFLOW_STATUS_SEND_FAILED]
 """Statuses in which a (new) review request can be sent to an actor."""
 
 NOTIFY_RESOURCE_TYPE_MAP = None

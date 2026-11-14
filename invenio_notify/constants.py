@@ -24,6 +24,7 @@ WORKFLOW_STATUS_REJECT = 'reject'
 WORKFLOW_STATUS_AVAILABLE = 'available' # This is not COAR standard, used internally.
 WORKFLOW_STATUS_REQUEST_REVIEW = 'request_review'
 WORKFLOW_STATUS_ACCEPT = 'accept'
+WORKFLOW_STATUS_SEND_FAILED = 'send_failed'  # not COAR standard: the actor inbox answered with an error
 
 # Request types (what an outgoing Offer asks the actor for)
 REQUEST_TYPE_ENDORSEMENT = 'endorsement'

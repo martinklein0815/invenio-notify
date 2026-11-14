@@ -21,8 +21,9 @@ from coarnotify.server import (
 from invenio_notify import constants
 from invenio_notify.errors import COARProcessFail
 from invenio_notify.proxies import current_inbox_service
-from invenio_notify.records.models import ActorModel
+from invenio_notify.records.models import ActorModel, EndorsementRequestModel
 from invenio_notify.utils.notify_utils import get_recid_by_record_url
+from invenio_notify.utils.record_utils import get_recid_by_record_uuid
 from invenio_pidstore.errors import PIDDoesNotExistError
 from invenio_rdm_records.proxies import current_rdm_records_service
 from invenio_rdm_records.proxies import current_rdm_records
@@ -129,6 +130,9 @@ class NotifyInboxService(BasicDbService):
                     record_url = obj.id
 
         if not record_url:
+            record_id = self.get_record_id_from_request(notification)
+            if record_id:
+                return record_id
             current_app.logger.error('No record URL found in notification')
             raise COARProcessFail(constants.STATUS_BAD_REQUEST, 'No record URL found')
 
@@ -146,7 +150,25 @@ class NotifyInboxService(BasicDbService):
             except Exception as e:
                 current_app.logger.error(f'Unexpected error while searching for records with DOI {record_url}: {e}')
 
-        return get_recid_by_record_url(record_url)
+        return get_recid_by_record_url(record_url) or self.get_record_id_from_request(notification)
+
+    @staticmethod
+    def get_record_id_from_request(notification: NotifyPattern):
+        """Record id (recid) of the request a reply refers to, via inReplyTo or object.id.
+
+        Used when a reply doesn't mention any URL or DOI of ours, only the id of our Offer.
+        """
+        candidates = [notification.in_reply_to]
+        obj = notification.object
+        if obj is not None:
+            candidates.append(obj.id)
+        for notification_id in candidates:
+            if not notification_id or not isinstance(notification_id, str):
+                continue
+            request = EndorsementRequestModel.query.filter_by(notification_id=notification_id).first()
+            if request:
+                return get_recid_by_record_uuid(request.record_id)
+        return None
 
 
 class InboxCOARBinding(COARNotifyServiceBinding):
@@ -183,10 +205,14 @@ class InboxCOARBinding(COARNotifyServiceBinding):
         try:
             records_service.record_cls.pid.resolve(record_id)
         except PIDDoesNotExistError:
-            current_app.logger.warning(
-                f'Record [{record_id}] from notification {notification_id} not found, '
-                f'payload: {notification.to_jsonld()}')
-            raise
+            fallback_id = current_inbox_service.get_record_id_from_request(notification)
+            if not fallback_id or fallback_id == record_id:
+                current_app.logger.warning(
+                    f'Record [{record_id}] from notification {notification_id} not found, '
+                    f'payload: {notification.to_jsonld()}')
+                raise
+            record_id = fallback_id
+            records_service.record_cls.pid.resolve(record_id)
 
         raw = notification.to_jsonld()
         current_app.logger.debug(f'client input raw: {raw}')

@@ -95,6 +95,15 @@ def create_endorsement_request_record(endorsement_request_data, record_id, user_
     })
 
 
+@unit_of_work()
+def mark_request_send_failed(request_id, request_type, uow=None):
+    """Mark a stored request as failed to send, unless a reply already changed its status."""
+    initial = constants.REQUEST_TYPE_INITIAL_STATUS[request_type]
+    (EndorsementRequestModel.query
+     .filter_by(id=request_id, latest_status=initial)
+     .update({'latest_status': constants.WORKFLOW_STATUS_SEND_FAILED}))
+
+
 def send_to_actor_inbox(actor, endorsement_request_data):
     """Send endorsement request to actor's inbox.
     
@@ -190,14 +199,22 @@ class EndorsementRequestResource(ApiErrorHandlersMixin, Resource):
             raise BadRequestError(f'Actor not available for {request_type} request')
 
         offer = create_request_data(user, record, actor, request_type)
-        send_to_actor_inbox(actor, offer)
 
+        # Store (and commit) the request before sending it: some services post a reply to
+        # our inbox while still handling our Offer, and that reply must find the request.
         try:
-            create_endorsement_request_record(offer, record._record.model.id, user.id, actor_id, request_type)
+            request_record = create_endorsement_request_record(
+                offer, record._record.model.id, user.id, actor_id, request_type)
             current_app.logger.info(f'Created {request_type} request record for actor {actor_id}')
         except Exception as e:
             current_app.logger.error(f'Failed to create {request_type} request record: {e}')
             raise Exception(f'Failed to create {request_type} request record') from e
+
+        try:
+            send_to_actor_inbox(actor, offer)
+        except Exception:
+            mark_request_send_failed(request_record.id, request_type)
+            raise
 
         return {'is_success': 1, 'message': 'Request Accepted'}, 200
 

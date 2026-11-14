@@ -209,9 +209,11 @@ class TestSendReviewRequest:
         assert request.latest_status == constants.WORKFLOW_STATUS_REQUEST_REVIEW
         assert request.notification_id == sent["id"]
 
-        # a second request while pending is refused
-        response = self.send(client, superuser_identity, rdm_record, actor.id)
-        assert response.status_code == 400
+        # while pending, no new request can be sent
+        statuses = ActorModel.get_available_actors(rdm_record._record.id, "review")
+        assert statuses[0]["status"] == constants.WORKFLOW_STATUS_REQUEST_REVIEW
+        assert constants.WORKFLOW_STATUS_REQUEST_REVIEW not in \
+            endorsement_request_resource.get_available_statuses("review")
 
     @patch.object(endorsement_request_resource.requests, 'post')
     def test_actor_without_review_capability(self, mock_post, client, rdm_record, superuser_identity,
@@ -336,3 +338,59 @@ def test_record_id_from_file_url(app):
     assert get_recid_by_record_url(f"{LANDING}/files/1604.05363v1.pdf", app) == "abcde-12345"
     assert get_recid_by_record_url(LANDING, app) == "abcde-12345"
     assert get_recid_by_record_url(LANDING + "/", app) == "abcde-12345"
+
+
+class TestStoreBeforeSend:
+
+    @patch('invenio_notify.utils.endorsement_request_utils.invenio_url_for',
+           return_value='https://example.com/self-inbox')
+    @patch.object(endorsement_request_resource.requests, 'post')
+    def test_request_stored_before_send_and_marked_failed(self, mock_post, mock_url_for, client,
+                                                          rdm_record, superuser_identity,
+                                                          create_actor, db):
+        actor = make_actor(create_actor, ["review"])
+        rdm_record._record.parent.access.owner.owner_id = superuser_identity.user.id
+
+        seen = {}
+
+        def fake_post(url, json=None, **kwargs):
+            # the request must already be stored when the service is contacted
+            seen['stored'] = EndorsementRequestModel.query.filter_by(notification_id=json["id"]).count()
+            return Mock(status_code=400, text='{"message":"Notification already exists"}')
+
+        mock_post.side_effect = fake_post
+
+        response = TestSendReviewRequest.send(client, superuser_identity, rdm_record, actor.id)
+        assert response.status_code == 400
+        assert seen['stored'] == 1
+
+        request = EndorsementRequestModel.query.one()
+        assert request.latest_status == constants.WORKFLOW_STATUS_SEND_FAILED
+
+        # a failed send can be retried
+        statuses = ActorModel.get_available_actors(rdm_record._record.id, "review")
+        assert statuses[0]["status"] == constants.WORKFLOW_STATUS_SEND_FAILED
+        assert constants.WORKFLOW_STATUS_SEND_FAILED in \
+            endorsement_request_resource.get_available_statuses("review")
+
+
+def test_record_id_from_reply_referring_to_offer(db, rdm_record, create_actor, superuser_identity):
+    from invenio_notify.proxies import current_inbox_service
+    actor = make_actor(create_actor, ["review"])
+    offer_id = generate_notification_id()
+    EndorsementRequestModel.create({
+        "notification_id": offer_id,
+        "record_id": rdm_record._record.id,
+        "user_id": superuser_identity.id,
+        "actor_id": actor.id,
+        "raw": {},
+        "request_type": "review",
+        "latest_status": constants.WORKFLOW_STATUS_REQUEST_REVIEW,
+    })
+    reply = Mock(context=None, in_reply_to=offer_id,
+                 object=Mock(id=offer_id, object=None))
+    assert current_inbox_service.get_record_id_from_notification(reply) == rdm_record.id
+
+    reply = Mock(context=Mock(id="https://review.example.org/submission/1"), in_reply_to=None,
+                 object=Mock(id=offer_id, object=None))
+    assert current_inbox_service.get_record_id_from_notification(reply) == rdm_record.id
