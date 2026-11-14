@@ -111,6 +111,7 @@ class InvenioNotify:
 
         # Globals required by jinja2
         app.jinja_env.filters["notify_enable_endorsement_request_section"] = enable_endorsement_request_sidebar
+        app.jinja_env.filters["notify_enable_review_request_section"] = enable_review_request_sidebar
 
         # Links on RDMRecordServiceConfig
         # RDMrecordServiceConfig can't be configured away, so we can rely on this specific class being available
@@ -198,21 +199,32 @@ def is_record_owner(record, ctx):
             and hasattr(g, "identity") and hasattr(g.identity, "id")
             and record.parent.access.owner.owner_id == g.identity.id)
 
-def enable_endorsement_request_sidebar(record):
-    # Check if endorsement requests section should be displayed
-    # Only check for logged in users, record owners, and if the feature is enabled
+def _enable_request_sidebar(record, request_type, feature_flag):
+    # Only for logged in record owners, and if the feature is enabled
     from flask import current_app as app
     from flask_login import current_user
-    enable_endorsement_request_section = False
-    if app.config.get(constants.NOTIFY_ENDORSEMENT_RECEIVE) and app.config.get(constants.NOTIFY_ENDORSEMENT_REQUEST):
+    enabled = False
+    if app.config.get(constants.NOTIFY_ENDORSEMENT_RECEIVE) and app.config.get(feature_flag):
         if current_user.is_authenticated:
             # Check if user is the record owner
             if record._record.parent.access.owned_by.owner_id == current_user.id:
                 try:
-                    enable_endorsement_request_section = ActorModel.has_available_actors(record._record.id)
+                    enabled = ActorModel.has_available_actors(record._record.id, request_type)
                 except Exception:
-                    pass
-    return enable_endorsement_request_section
+                    app.logger.exception("Failed to check available notify actors")
+    return enabled
+
+
+def enable_endorsement_request_sidebar(record):
+    """Check if the endorsement request section should be displayed."""
+    return _enable_request_sidebar(record, constants.REQUEST_TYPE_ENDORSEMENT,
+                                   constants.NOTIFY_ENDORSEMENT_REQUEST)
+
+
+def enable_review_request_sidebar(record):
+    """Check if the review request section should be displayed."""
+    return _enable_request_sidebar(record, constants.REQUEST_TYPE_REVIEW,
+                                   constants.NOTIFY_REVIEW_REQUEST)
 
 def notify_signposts(app, record):
     if app.config.get(constants.NOTIFY_ENDORSEMENT_RECEIVE, False):

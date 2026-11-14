@@ -67,6 +67,7 @@ class ActorDetailView(PCIEndorsementAdminDisabledMixin, AdminResourceDetailView)
         "actor_id": {"text": _("Actor ID"), "order": 3, "width": 2},
         "inbox_url": {"text": _("Inbox URL"), "order": 4, "width": 2},
         "inbox_api_token": {"text": _("Inbox API Token"), "order": 4, "width": 2},
+        "capabilities": {"text": _("Accepts requests for"), "order": 5, "width": 2},
         "description": {"text": _("Description"), "order": 5, "width": 3},
         "created": {"text": _("Created"), "order": 6, "width": 2},
         "updated": {"text": _("Updated"), "order": 7, "width": 2},
@@ -94,6 +95,12 @@ actor_form_fields = {
         "order": 35,
         "text": _("Inbox API Token"),
         "description": _("API token for the actor's inbox."),
+    },
+    "capabilities": {
+        "order": 37,
+        "text": _("Accepts requests for"),
+        "description": _("Request types this actor accepts: \"endorsement\" and/or \"review\". "
+                         "Leave empty for endorsement only."),
     },
     "description": {
         "order": 40,

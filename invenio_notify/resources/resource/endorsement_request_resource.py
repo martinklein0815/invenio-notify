@@ -5,7 +5,7 @@
 
 import requests
 from coarnotify.patterns import RequestEndorsement
-from flask import g, current_app
+from flask import g, current_app, request
 from flask_resources import (
     Resource,
     resource_requestctx,
@@ -26,7 +26,7 @@ from invenio_notify.errors import SendRequestFail, BadRequestError
 from invenio_notify.records.models import ActorModel, EndorsementRequestModel, EndorsementModel
 from invenio_notify.utils import record_utils
 from invenio_notify.utils.endorsement_request_utils import (
-    create_endorsement_request_data,
+    create_request_data,
 )
 from invenio_notify.utils.record_utils import resolve_record_from_pid
 from invenio_rdm_records.records import RDMRecord
@@ -47,18 +47,42 @@ def validate_owner_id(record: RDMRecord, user_id):
         raise BadRequestError('User is not the owner of this record')
 
 
+def get_request_type(value) -> str:
+    """Validate the request type sent by the client (defaults to endorsement)."""
+    request_type = value or constants.REQUEST_TYPE_ENDORSEMENT
+    if request_type not in constants.REQUEST_TYPES:
+        raise BadRequestError(f'Unknown request type: {request_type}')
+    if (request_type == constants.REQUEST_TYPE_REVIEW
+            and not current_app.config.get(constants.NOTIFY_REVIEW_REQUEST, False)):
+        raise BadRequestError('Review requests are not enabled')
+    return request_type
+
+
+def get_available_statuses(request_type) -> list:
+    """Statuses in which a new request of this type may be sent."""
+    if request_type == constants.REQUEST_TYPE_REVIEW:
+        return current_app.config.get(
+            "NOTIFY_REVIEW_AVAILABLE_ACTORS",
+            [constants.WORKFLOW_STATUS_TENTATIVE_REJECT, constants.WORKFLOW_STATUS_AVAILABLE])
+    return current_app.config.get(
+        "NOTIFY_ENDORSEMENT_AVAILABLE_ACTORS",
+        [constants.WORKFLOW_STATUS_TENTATIVE_REJECT, constants.WORKFLOW_STATUS_AVAILABLE])
+
+
 @unit_of_work()
-def create_endorsement_request_record(endorsement_request_data, record_id, user_id, actor_id, uow=None):
-    """Create endorsement request database record.
+def create_endorsement_request_record(endorsement_request_data, record_id, user_id, actor_id,
+                                      request_type=constants.REQUEST_TYPE_ENDORSEMENT, uow=None):
+    """Create endorsement or review request database record.
     
     Args:
-        endorsement_request_data: Dictionary containing endorsement request data
+        endorsement_request_data: The COAR Notify Offer that was sent
         record_id: ID of the record
         user_id: ID of the user making the request
         actor_id: ID of the actor
+        request_type: 'endorsement' or 'review'
         
     Returns:
-        EndorsementRequestModel: The created endorsement request record
+        EndorsementRequestModel: The created request record
     """
     return EndorsementRequestModel.create({
         "notification_id": endorsement_request_data.id,
@@ -66,11 +90,12 @@ def create_endorsement_request_record(endorsement_request_data, record_id, user_
         "user_id": user_id,
         "actor_id": actor_id,
         "raw": endorsement_request_data.to_jsonld(),
-        "latest_status": constants.WORKFLOW_STATUS_REQUEST_ENDORSEMENT,
+        "request_type": request_type,
+        "latest_status": constants.REQUEST_TYPE_INITIAL_STATUS[request_type],
     })
 
 
-def send_to_actor_inbox(actor, endorsement_request_data: RequestEndorsement):
+def send_to_actor_inbox(actor, endorsement_request_data):
     """Send endorsement request to actor's inbox.
     
     Args:
@@ -130,7 +155,11 @@ class EndorsementRequestResource(ApiErrorHandlersMixin, Resource):
     @request_data
     @response_handler()
     def send(self):
-        """Send endorsement request."""
+        """Send an endorsement or review request.
+
+        Body: {"actor_id": <int>, "request_type": "endorsement" | "review"}
+        (request_type defaults to "endorsement").
+        """
         data = resource_requestctx.data
         pid_value = resource_requestctx.view_args["pid_value"]
 
@@ -140,11 +169,12 @@ class EndorsementRequestResource(ApiErrorHandlersMixin, Resource):
             raise BadRequestError('User identity is required')
 
         actor_id = data['actor_id']
+        request_type = get_request_type(data.get('request_type'))
 
-        actor = ActorModel.query.filter_by(id=actor_id).one()
+        actor = ActorModel.query.filter_by(id=actor_id).one()  # NoResultFound -> 404
 
-        if not actor or not actor.inbox_url:
-            raise BadRequestError('Actor not available for endorsement request')
+        if not actor or not actor.inbox_url or not actor.supports(request_type):
+            raise BadRequestError(f'Actor not available for {request_type} request')
 
         record: RecordItem = record_utils.read_record_item(system_identity, pid_value)
         user = User.query.get(g.identity.id)
@@ -153,34 +183,31 @@ class EndorsementRequestResource(ApiErrorHandlersMixin, Resource):
 
         record_id = record._record.model.id
 
-        # First check if there's an actual endorsement
-        status = EndorsementModel.get_latest_status(record_id, actor_id)
-        if status:
-            raise BadRequestError(f'Actor not available for endorsement request')
+        # Same availability rules as the actor list shown in the sidebar
+        available = {a['actor_id']: a['status']
+                     for a in ActorModel.get_available_actors(record_id, request_type)}
+        if actor.id not in available or available[actor.id] not in get_available_statuses(request_type):
+            raise BadRequestError(f'Actor not available for {request_type} request')
 
-        # If no endorsement, check endorsement request status
-        status = EndorsementRequestModel.get_latest_status(record_id, actor_id)
-
-        # If there is a previous request, only allow if the status is TentativeReject
-        if status and status != constants.WORKFLOW_STATUS_TENTATIVE_REJECT:
-            raise BadRequestError(f'Actor not available for endorsement request')
-
-        endorsement_request = create_endorsement_request_data(user, record, actor)
-        send_to_actor_inbox(actor, endorsement_request)
+        offer = create_request_data(user, record, actor, request_type)
+        send_to_actor_inbox(actor, offer)
 
         try:
-            create_endorsement_request_record(endorsement_request, record._record.model.id, user.id, actor_id)
-            current_app.logger.info(f'Created endorsement request record for actor {actor_id}')
+            create_endorsement_request_record(offer, record._record.model.id, user.id, actor_id, request_type)
+            current_app.logger.info(f'Created {request_type} request record for actor {actor_id}')
         except Exception as e:
-            current_app.logger.error(f'Failed to create endorsement request record: {e}')
-            raise Exception('Failed to create endorsement request record') from e
+            current_app.logger.error(f'Failed to create {request_type} request record: {e}')
+            raise Exception(f'Failed to create {request_type} request record') from e
 
         return {'is_success': 1, 'message': 'Request Accepted'}, 200
 
     @request_view_args
     @response_handler()
     def list_actors(self):
-        """List all available actors."""
+        """List the actors a request can be sent to, with their status.
+
+        Query arg: request_type=endorsement|review (defaults to endorsement).
+        """
         pid_value = resource_requestctx.view_args["pid_value"]
         record = resolve_record_from_pid(pid_value)
 
@@ -191,5 +218,6 @@ class EndorsementRequestResource(ApiErrorHandlersMixin, Resource):
 
         validate_owner_id(record, user_id)
 
-        actors = ActorModel.get_available_actors(record.id)
+        request_type = get_request_type(request.args.get('request_type'))
+        actors = ActorModel.get_available_actors(record.id, request_type)
         return actors, 200

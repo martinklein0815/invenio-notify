@@ -6,7 +6,8 @@ import regex
 from invenio_i18n import lazy_gettext as _
 
 from invenio_notify.constants import WORKFLOW_STATUS_REQUEST_ENDORSEMENT, WORKFLOW_STATUS_TENTATIVE_ACCEPT, \
-    WORKFLOW_STATUS_TENTATIVE_REJECT, WORKFLOW_STATUS_REJECT, WORKFLOW_STATUS_AVAILABLE
+    WORKFLOW_STATUS_TENTATIVE_REJECT, WORKFLOW_STATUS_REJECT, WORKFLOW_STATUS_AVAILABLE, \
+    WORKFLOW_STATUS_REQUEST_REVIEW, WORKFLOW_STATUS_ACCEPT, WORKFLOW_STATUS_ANNOUNCE_REVIEW
 from invenio_notify.workflows.endorsement import EndorsementWorkflow
 
 ###############################
@@ -71,6 +72,7 @@ For this to work NOTIFY_ENDORSEMENT_RECEIVE MUST be set to True.
 """
 
 NOTIFY_ENDORSEMENT_STATUS_LABELS = {
+    WORKFLOW_STATUS_ACCEPT: 'In progress',
     WORKFLOW_STATUS_TENTATIVE_ACCEPT: 'In progress',
     WORKFLOW_STATUS_REJECT: {'label': 'Rejected', 'labelClass': 'red'},
     WORKFLOW_STATUS_TENTATIVE_REJECT: {'label': 'Not endorsed in current form', 'labelClass': 'orange'},
@@ -116,6 +118,40 @@ NOTIFY_ENDORSEMENT_AVAILABLE_ACTORS = [WORKFLOW_STATUS_TENTATIVE_REJECT, WORKFLO
 Config variable for endorsement requests react component that determines
 which workflow states mean that an actor is available to request an endorsement
 from
+"""
+
+#########################
+## Review request config
+## NOTIFY_REVIEW_ prefixed
+
+NOTIFY_REVIEW_REQUEST = True
+"""
+Enables sending review requests (COAR Notify "Request Review" Offers) from the record
+landing page. Only actors whose capabilities include "review" are offered, so nothing is
+shown until an administrator gives an actor that capability.
+Requires NOTIFY_ENDORSEMENT_RECEIVE to be True, since replies arrive through the inbox.
+"""
+
+NOTIFY_REVIEW_STATUS_LABELS = {
+    WORKFLOW_STATUS_REQUEST_REVIEW: 'Pending',
+    WORKFLOW_STATUS_ACCEPT: {'label': 'Accepted', 'labelClass': 'blue'},
+    WORKFLOW_STATUS_TENTATIVE_ACCEPT: {'label': 'Tentatively accepted', 'labelClass': 'blue'},
+    WORKFLOW_STATUS_REJECT: {'label': 'Rejected', 'labelClass': 'red'},
+    WORKFLOW_STATUS_TENTATIVE_REJECT: {'label': 'Not reviewed in current form', 'labelClass': 'orange'},
+    WORKFLOW_STATUS_ANNOUNCE_REVIEW: {'label': 'Reviewed', 'labelClass': 'green'},
+    WORKFLOW_STATUS_AVAILABLE: {'label': 'Available', 'labelClass': 'green'},
+}
+"""Labels for review request statuses, same format as NOTIFY_ENDORSEMENT_STATUS_LABELS."""
+
+NOTIFY_REVIEW_AVAILABLE_ACTORS = [WORKFLOW_STATUS_TENTATIVE_REJECT, WORKFLOW_STATUS_AVAILABLE]
+"""Statuses in which a (new) review request can be sent to an actor."""
+
+NOTIFY_RESOURCE_TYPE_MAP = None
+"""
+Maps InvenioRDM resource type ids to the `type` of `ietf:item` in outgoing requests, e.g.
+{"publication-preprint": ["Article", "sorg:ScholarlyArticle"], "dataset": ["Document", "sorg:Dataset"]}.
+A key also matches resource types it is a prefix of ("publication" matches "publication-annotation").
+None uses invenio_notify.utils.endorsement_request_utils.DEFAULT_RESOURCE_TYPE_MAP.
 """
 
 NOTIFY_ENDORSEMENT_SIDEBAR_TEMPLATE = "invenio_notify/records/details/side_bar/endorsements.html"

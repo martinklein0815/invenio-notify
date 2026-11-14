@@ -85,9 +85,28 @@ ActorListTable.propTypes = {
     statusLabels: PropTypes.object.isRequired,
 };
 
+const TEXTS = {
+    endorsement: {
+        buttonTitle: "Request actor for endorsement",
+        fetchError: "An error occurred while sending endorsement request.",
+        errorHeader: "Unable to process endorsement request",
+        successHeader: "Endorsement request sent successfully",
+        successBody: "Your endorsement request has been sent to the actor.",
+    },
+    review: {
+        buttonTitle: "Request a review from this service",
+        fetchError: "An error occurred while sending review request.",
+        errorHeader: "Unable to process review request",
+        successHeader: "Review request sent successfully",
+        successBody: "Your review request has been sent to the review service.",
+    },
+};
+
+const getTexts = (requestType) => TEXTS[requestType] || TEXTS.endorsement;
+
 class EndorsementRequestForm extends Component {
     render() {
-        const {options, selectedId, loading, onChange, onSubmit} = this.props;
+        const {options, selectedId, loading, onChange, onSubmit, buttonTitle} = this.props;
 
         return (
             <Grid>
@@ -109,7 +128,7 @@ class EndorsementRequestForm extends Component {
                         fluid
                         onClick={onSubmit}
                         loading={loading}
-                        title={i18next.t("Request actor for endorsement")}
+                        title={i18next.t(buttonTitle)}
                     >
                         {i18next.t("Request")}
                     </Button>
@@ -125,6 +144,7 @@ EndorsementRequestForm.propTypes = {
     loading: PropTypes.bool.isRequired,
     onChange: PropTypes.func.isRequired,
     onSubmit: PropTypes.func.isRequired,
+    buttonTitle: PropTypes.string.isRequired,
 };
 
 export class EndorsementRequestDropdown extends Component {
@@ -214,9 +234,9 @@ export class EndorsementRequestDropdown extends Component {
     sendEndorsementRequest = async () => {
         this.setState({endoReqSuccess: false});
         const fetchRecordEndorsementRequests = async () => {
-            const {endorsementRequestEndpoint} = this.props;
+            const {endorsementRequestEndpoint, requestType} = this.props;
             return await http.post(endorsementRequestEndpoint,
-                {'actor_id': this.state.selectedActorId},
+                {'actor_id': this.state.selectedActorId, 'request_type': requestType},
                 {
                     headers: {
                         Accept: "application/json",
@@ -227,7 +247,7 @@ export class EndorsementRequestDropdown extends Component {
         await this.handleAsyncFetch(
             fetchRecordEndorsementRequests,
             'endorsementRequests',
-            'An error occurred while sending endorsement request.',
+            getTexts(this.props.requestType).fetchError,
             null,
             () => {
                 this.setState({endoReqSuccess: true});
@@ -256,6 +276,7 @@ export class EndorsementRequestDropdown extends Component {
 
     render() {
         const {actorOptions, selectedActorId, error, endoReqSuccess} = this.state;
+        const texts = getTexts(this.props.requestType);
         const endorsementRequestOptions = this.getAvailableActorOptions(actorOptions, this.props.availableActors);
 
         // Actors with an 'available' status will not be displayed in the table (filter applied below)
@@ -266,7 +287,7 @@ export class EndorsementRequestDropdown extends Component {
             <>
                 {error && (
                     <ErrorMessage
-                        header={i18next.t("Unable to process endorsement request")}
+                        header={i18next.t(texts.errorHeader)}
                         content={error}
                         icon="exclamation"
                         negative
@@ -282,9 +303,9 @@ export class EndorsementRequestDropdown extends Component {
                         />
                         <div role="alert" className="ui positive message">
                             <div className="header">
-                                {i18next.t("Endorsement request sent successfully")}
+                                {i18next.t(texts.successHeader)}
                             </div>
-                            <p>{i18next.t("Your endorsement request has been sent to the actor.")}</p>
+                            <p>{i18next.t(texts.successBody)}</p>
                         </div>
                     </div>
                 )}
@@ -295,6 +316,7 @@ export class EndorsementRequestDropdown extends Component {
                         loading={this.state.loading}
                         onChange={this.handleActorChange}
                         onSubmit={this.handleSubmit}
+                        buttonTitle={texts.buttonTitle}
                     />
                 )}
                 {filteredActorOptions.length > 0 && (
@@ -305,7 +327,12 @@ export class EndorsementRequestDropdown extends Component {
     }
 }
 
+EndorsementRequestDropdown.defaultProps = {
+    requestType: "endorsement",
+};
+
 EndorsementRequestDropdown.propTypes = {
+    requestType: PropTypes.oneOf(["endorsement", "review"]),
     endorsementRequestEndpoint: PropTypes.string.isRequired,
     actorOptionEndpoint: PropTypes.string.isRequired,
     statusLabels: PropTypes.object.isRequired,

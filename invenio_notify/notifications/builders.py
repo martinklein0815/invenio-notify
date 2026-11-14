@@ -133,7 +133,8 @@ class EndorsementUpdateNotificationBuilder(NotificationBuilder):
     @classmethod
     def build(cls, record: RDMRecordMetadata = None,
               actor_name="Unknown", endorsement_status="Unknown",
-              receiver_email=None, user_id=None):
+              receiver_email=None, user_id=None,
+              request_type=constants.REQUEST_TYPE_ENDORSEMENT):
         """
         Build notification with the provided parameters.
 
@@ -143,6 +144,7 @@ class EndorsementUpdateNotificationBuilder(NotificationBuilder):
             endorsement_status: Status of the endorsement (default: "Unknown")
             receiver_email: Email of the recipient (default: "Unknown")
             user_id: ID of the user who should receive the notification (optional)
+            request_type: 'endorsement' or 'review', used for the wording of the email
 
         Returns:
             Notification: A notification object with the context from the parameters
@@ -157,6 +159,7 @@ class EndorsementUpdateNotificationBuilder(NotificationBuilder):
             return None
 
         context = {
+            'request_type': request_type or constants.REQUEST_TYPE_ENDORSEMENT,
             'record_title': record_title,
             'record_url': record_url,
             'endorsement_status': endorsement_status,
@@ -166,6 +169,7 @@ class EndorsementUpdateNotificationBuilder(NotificationBuilder):
             'WORKFLOW_STATUS_REJECT': constants.WORKFLOW_STATUS_REJECT,
             'WORKFLOW_STATUS_TENTATIVE_ACCEPT': constants.WORKFLOW_STATUS_TENTATIVE_ACCEPT,
             'WORKFLOW_STATUS_TENTATIVE_REJECT': constants.WORKFLOW_STATUS_TENTATIVE_REJECT,
+            'WORKFLOW_STATUS_ACCEPT': constants.WORKFLOW_STATUS_ACCEPT,
         }
 
         return Notification(type=cls.type, context=context, )

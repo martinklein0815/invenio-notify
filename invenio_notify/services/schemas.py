@@ -61,6 +61,10 @@ class ActorSchema(BaseRecordSchema):
     inbox_url = fields.Url(schemes={'http', 'https'}, require_tld=True, required=False, allow_none=True)
     inbox_api_token = fields.String(required=False, allow_none=True)
     description = fields.String(required=False)
+    capabilities = fields.List(
+        fields.String(validate=validate.OneOf(["endorsement", "review"])),
+        required=False, allow_none=True,
+    )
 
     members = fields.List(fields.Nested(UserSchema), required=False, dump_only=True)
 
@@ -70,6 +74,9 @@ class ActorSchema(BaseRecordSchema):
             data['inbox_url'] = None
         if 'inbox_api_token' in data and data['inbox_api_token'] == '':
             data['inbox_api_token'] = None
+        if isinstance(data.get('capabilities'), str):
+            # admin form sends a comma separated string, e.g. "endorsement, review"
+            data['capabilities'] = [c.strip() for c in data['capabilities'].split(',') if c.strip()]
         return data
 
 
@@ -87,6 +94,7 @@ class EndorsementRequestSchema(BaseRecordSchema):
     actor_id = fields.Integer(required=True)
     raw = fields.String(required=True)
     latest_status = fields.String(required=True)
+    request_type = fields.String(required=False)
     user_id = fields.Integer(required=False)
 
 

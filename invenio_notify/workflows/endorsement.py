@@ -22,7 +22,7 @@ from marshmallow import ValidationError
 
 from invenio_notify import constants
 from invenio_notify.constants import TYPE_REVIEW, TYPE_ENDORSEMENT, TYPE_TENTATIVE_ACCEPT, TYPE_REJECT, \
-    TYPE_TENTATIVE_REJECT
+    TYPE_TENTATIVE_REJECT, TYPE_ACCEPT
 from invenio_notify.records.models import NotifyInboxModel, EndorsementReplyModel, EndorsementRequestModel, ActorModel
 from invenio_notify.workflows.core import mark_as_processed, DataNotFound, resolve_record_from_notification, \
     get_record_by_id, get_user_id_by_record, identify_supported_type, NotifyWorkflow
@@ -31,7 +31,8 @@ from invenio_access.permissions import system_identity
 
 log = logging.getLogger(__name__)
 
-SUPPORTED_TYPES = [TYPE_REVIEW, TYPE_ENDORSEMENT, TYPE_TENTATIVE_ACCEPT, TYPE_REJECT, TYPE_TENTATIVE_REJECT]
+SUPPORTED_TYPES = [TYPE_REVIEW, TYPE_ENDORSEMENT, TYPE_TENTATIVE_ACCEPT, TYPE_REJECT, TYPE_TENTATIVE_REJECT,
+                   TYPE_ACCEPT]
 
 class EndorsementWorkflow(NotifyWorkflow):
     @staticmethod
@@ -46,10 +47,16 @@ class EndorsementWorkflow(NotifyWorkflow):
             return
 
         try:
-            reply = handle_endorsement_reply(inbox_record, notification)
-            if noti_type in {constants.TYPE_REVIEW, constants.TYPE_ENDORSEMENT}:
+            is_announcement = noti_type in {constants.TYPE_REVIEW, constants.TYPE_ENDORSEMENT}
+            # An announcement whose inReplyTo doesn't match one of our requests is still a
+            # valid (unsolicited) review or endorsement, so it is stored anyway.
+            reply = handle_endorsement_reply(inbox_record, notification,
+                                             allow_unknown_request=is_announcement)
+            if is_announcement:
                 endo_reply_id = reply.id if reply else None
-                handle_endorsement_and_review(inbox_record, notification, actor, endo_reply_id)
+                fallback_record_id = reply.endorsement_request.record_id if reply else None
+                handle_endorsement_and_review(inbox_record, notification, actor, endo_reply_id,
+                                              fallback_record_id=fallback_record_id)
 
             # Mark inbox as processed after successful reply creation
             mark_as_processed(inbox_record)
@@ -63,14 +70,17 @@ class EndorsementWorkflow(NotifyWorkflow):
 
 @unit_of_work()
 def handle_endorsement_reply(inbox_record: NotifyInboxModel,
-                             notification: NotifyPattern, uow=None) -> Optional[EndorsementReplyModel]:
+                             notification: NotifyPattern, allow_unknown_request=False,
+                             uow=None) -> Optional[EndorsementReplyModel]:
     """
-    Process endorsement reply for a single inbox record.
+    Process a reply to an endorsement or review request for a single inbox record.
     Creates a new EndorsementReplyModel record.
 
     Args:
         inbox_record: The inbox record to process
         notification: The notification data
+        allow_unknown_request: if True, return None instead of raising DataNotFound when
+            inReplyTo doesn't match any request we sent
 
     Returns:
         bool: True if processing was successful, False otherwise
@@ -86,6 +96,10 @@ def handle_endorsement_reply(inbox_record: NotifyInboxModel,
     endorsement_request = EndorsementRequestModel.query.filter_by(notification_id=notification_id).first()
     if not endorsement_request:
         log.debug(f"Endorsement request with notification_id {notification_id} not found")
+        if allow_unknown_request:
+            log.info(f"Notification {inbox_record.id} replies to unknown request {notification_id}, "
+                     f"processing it as unsolicited")
+            return None
         raise DataNotFound(
             f"Endorsement request not found for notification id[{inbox_record.id}], notification_id[{notification_id}]")
 
@@ -107,7 +121,8 @@ def handle_endorsement_reply(inbox_record: NotifyInboxModel,
             endorsement_request.record_id,
             endorsement_request.actor.name,
             workflow_status,
-            uow
+            uow,
+            request_type=endorsement_request.request_type,
         )
 
     reply = EndorsementReplyModel.create({
@@ -129,6 +144,7 @@ def handle_endorsement_and_review(inbox_record: NotifyInboxModel,
                                   notification: NotifyPattern,
                                   actor: ActorModel,
                                   endo_reply_id: Optional[int] = None,
+                                  fallback_record_id=None,
                                   uow=None, ):
     """
     Process endorsement review for a single inbox record.
@@ -138,6 +154,8 @@ def handle_endorsement_and_review(inbox_record: NotifyInboxModel,
         notification_raw: The raw notification data
         actor: The actor associated with the notification
         endo_reply_id: Id of the endorsement reply if applicable
+        fallback_record_id: UUID of the record of the matching request, used when the
+            record can't be resolved from context.id
 
     Returns:
         bool: True if processing was successful, False otherwise
@@ -148,6 +166,11 @@ def handle_endorsement_and_review(inbox_record: NotifyInboxModel,
         record_url = notification.context.id
 
     record = resolve_record_from_notification(record_url)
+    if record is None and fallback_record_id:
+        try:
+            record = current_rdm_records_service.record_cls.get_record(fallback_record_id)
+        except Exception as e:
+            log.warning(f"Failed to load record {fallback_record_id} of the matching request: {e}")
     if record is None:
         raise DataNotFound(f"Failed to resolve record from notification")
 
@@ -195,7 +218,9 @@ def get_workflow_status(notification: NotifyPattern) -> str | None:
 
     # Check for simple single-type notifications first
     for t in type_field:
-        if t == constants.TYPE_TENTATIVE_ACCEPT:
+        if t == constants.TYPE_ACCEPT:
+            return constants.WORKFLOW_STATUS_ACCEPT
+        elif t == constants.TYPE_TENTATIVE_ACCEPT:
             return constants.WORKFLOW_STATUS_TENTATIVE_ACCEPT
         elif t == constants.TYPE_TENTATIVE_REJECT:
             return constants.WORKFLOW_STATUS_TENTATIVE_REJECT
@@ -214,7 +239,8 @@ def get_workflow_status(notification: NotifyPattern) -> str | None:
     return None
 
 def create_endorsement_update_notification(record_id: str, actor_name: str,
-                                           noti_type: str, uow) -> None:
+                                           noti_type: str, uow,
+                                           request_type=constants.REQUEST_TYPE_ENDORSEMENT) -> None:
     record = get_record_by_id(record_id)
     record_owner_user_id = get_user_id_by_record(record)
     notification = EndorsementUpdateNotificationBuilder.build(
@@ -222,6 +248,7 @@ def create_endorsement_update_notification(record_id: str, actor_name: str,
                         actor_name=actor_name,
                         user_id=record_owner_user_id,
                         endorsement_status=noti_type,
+                        request_type=request_type,
                     )
     if notification is not None:
         uow.register(NotificationOp(notification))

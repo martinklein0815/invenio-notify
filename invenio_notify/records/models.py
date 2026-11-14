@@ -242,12 +242,28 @@ class ActorModel(db.Model, Timestamp, DbOperationMixin):
 
     description = db.Column(db.Text, nullable=True)
 
+    capabilities = db.Column(JSON, nullable=True)
+    """ Request types the actor accepts, e.g. ["endorsement", "review"].
+        None means the actor only accepts endorsement requests (the behaviour before
+        review requests were added). """
+
     members = db.relationship(
         "User",
         secondary=ActorMapModel.__tablename__,
     )
 
     endorsements = db.relationship("EndorsementModel", back_populates="actor")
+
+    def get_capabilities(self) -> list:
+        """Request types this actor accepts (defaults to endorsement only)."""
+        if self.capabilities is None:
+            return [constants.REQUEST_TYPE_ENDORSEMENT]
+        if isinstance(self.capabilities, str):
+            return [c.strip() for c in self.capabilities.split(',') if c.strip()]
+        return list(self.capabilities)
+
+    def supports(self, request_type) -> bool:
+        return request_type in self.get_capabilities()
 
     @classmethod
     def has_member_with_email(cls, email, actor_id) -> bool:
@@ -285,92 +301,92 @@ class ActorModel(db.Model, Timestamp, DbOperationMixin):
         return result is not None
 
     @classmethod
-    def has_available_actors(cls, record_id) -> bool:
+    def has_available_actors(cls, record_id, request_type=constants.REQUEST_TYPE_ENDORSEMENT) -> bool:
         """Check if there are any available actors to display in the sidebar.
 
-        This can mean an actor either to make an endorsement request (see
-        NOTIFY_ENDORSEMENT_AVAILABLE_ACTORS in config for the conditions) or
-        to display the status af an already initiated workflow.
-
-        An actor is available if it has:
-         1. inbox_url configured
-         2. no EndorsementModel records exist against the given record.
+        This can mean an actor either to make a request (see
+        NOTIFY_ENDORSEMENT_AVAILABLE_ACTORS / NOTIFY_REVIEW_AVAILABLE_ACTORS in config
+        for the conditions) or to display the status of an already initiated workflow.
 
         Args:
             record_id: UUID of the record
+            request_type: 'endorsement' or 'review'
 
         Returns:
             bool: True if there are available actors, False otherwise
         """
-        exists_query = (
-            db.session.query(cls.id)
-            .filter(cls.inbox_url.isnot(None))
-            .outerjoin(
-                EndorsementModel,
-                and_(
-                    EndorsementModel.actor_id == cls.id,
-                    EndorsementModel.record_id == record_id,
-                )
-            )
-            .filter(EndorsementModel.id.is_(None))
-            .exists()
-        )
-
-        return db.session.query(exists_query).scalar()
+        return len(cls.get_available_actors(record_id, request_type)) > 0
 
     @classmethod
-    def get_available_actors(cls, record_id):
-        """Get list of all actors that:
-              1. Have inbox_url configured
-              2. Have no endorsements
+    def get_available_actors(cls, record_id, request_type=constants.REQUEST_TYPE_ENDORSEMENT):
+        """Get list of actors that can receive a request of the given type for a record.
 
-            Join with EndorsementRequest to retrieve the latest status if a workflow
-            has been initiated or otherwise return as available.
+        An actor is listed if it:
+          1. has inbox_url configured
+          2. accepts the request type (see ActorModel.capabilities)
+          3. for endorsements: has not endorsed or reviewed this record yet (unchanged behaviour)
+
+        Each actor is returned with the latest status of the request of this type for this
+        record, or 'available' if no request was made yet. For reviews, an actor that already
+        announced a review of this record version without a request gets 'announce_review'.
 
         Args:
             record_id: UUID of the record
+            request_type: 'endorsement' or 'review'
 
         Returns:
             list: List of actor dictionaries with actor_id, actor_name, and status
         """
-        latest_request_status = (
-            db.session.query(EndorsementRequestModel.latest_status)
-            .filter(
-                EndorsementRequestModel.actor_id == cls.id,
-                EndorsementRequestModel.record_id == record_id,
-            )
-            .order_by(EndorsementRequestModel.created.desc())
-            .limit(1)
-            .correlate(cls)
-            .scalar_subquery()
-        )
+        actors = cls.query.filter(cls.inbox_url.isnot(None)).all()
+        actors = [a for a in actors if a.supports(request_type)]
+        if not actors:
+            return []
 
-        results = (
-            db.session.query(
-                cls.id.label('actor_id'),
-                cls.name.label('actor_name'),
-                latest_request_status.label('request_status'),
+        actor_ids = [a.id for a in actors]
+
+        # latest request status per actor for this request type
+        requests = (
+            db.session.query(EndorsementRequestModel.actor_id, EndorsementRequestModel.latest_status)
+            .filter(
+                EndorsementRequestModel.record_id == record_id,
+                EndorsementRequestModel.actor_id.in_(actor_ids),
+                EndorsementRequestModel.request_type == request_type,
             )
-            .filter(cls.inbox_url.isnot(None))
-            .outerjoin(
-                EndorsementModel,
-                and_(
-                    EndorsementModel.actor_id == cls.id,
-                    EndorsementModel.record_id == record_id,
-                )
-            )
-            .filter(EndorsementModel.id.is_(None))
+            .order_by(EndorsementRequestModel.created.asc())
             .all()
         )
+        latest_status = {}
+        for actor_id, status in requests:
+            latest_status[actor_id] = status  # ordered by created asc, last one wins
 
-        return [
-            {
-                "actor_id": result.actor_id,
-                "actor_name": result.actor_name,
-                "status": result.request_status or WORKFLOW_STATUS_AVAILABLE,
-            }
-            for result in results
-        ]
+        # endorsements / reviews already received for this record
+        received = (
+            db.session.query(EndorsementModel.actor_id, EndorsementModel.review_type)
+            .filter(
+                EndorsementModel.record_id == record_id,
+                EndorsementModel.actor_id.in_(actor_ids),
+            )
+            .all()
+        )
+        received_any = {actor_id for actor_id, _ in received}
+        received_review = {actor_id for actor_id, t in received if t == constants.TYPE_REVIEW}
+
+        results = []
+        for actor in actors:
+            status = latest_status.get(actor.id)
+            if request_type == constants.REQUEST_TYPE_ENDORSEMENT:
+                if actor.id in received_any:
+                    continue
+            elif request_type == constants.REQUEST_TYPE_REVIEW:
+                if status is None and actor.id in received_review:
+                    status = constants.WORKFLOW_STATUS_ANNOUNCE_REVIEW
+            results.append({
+                "actor_id": actor.id,
+                "actor_name": actor.name,
+                "status": status or WORKFLOW_STATUS_AVAILABLE,
+            })
+
+        return results
 
 
 class EndorsementModel(db.Model, Timestamp, DbOperationMixin):
@@ -456,7 +472,7 @@ class EndorsementModel(db.Model, Timestamp, DbOperationMixin):
 
 class EndorsementRequestModel(db.Model, Timestamp, DbOperationMixin):
     """
-    Endorsement Request that is sent by record owners to actors.
+    Endorsement or review request that is sent by record owners to actors.
 
     It serves as an outbox of our repository system for COAR endorsement notifications.
     """
@@ -491,6 +507,10 @@ class EndorsementRequestModel(db.Model, Timestamp, DbOperationMixin):
     raw = db.Column(JSON, nullable=False)
     """ Raw notification data as JSON """
 
+    request_type = db.Column(db.Text, nullable=False, default=constants.REQUEST_TYPE_ENDORSEMENT,
+                             server_default=constants.REQUEST_TYPE_ENDORSEMENT)
+    """ What was requested: 'endorsement' (RequestEndorsement) or 'review' (RequestReview) """
+
     latest_status = db.Column(db.Text, nullable=False)
     """ Latest status, e.g., 'coar-notify:EndorsementAction', 'Request Endorsement', 'Reject', 'Announce Endorsement'
         This field is updated when a reply is received."""
@@ -498,26 +518,31 @@ class EndorsementRequestModel(db.Model, Timestamp, DbOperationMixin):
     replies = db.relationship("EndorsementReplyModel", back_populates="endorsement_request")
 
     @classmethod
-    def get_latest_status(cls, record_id, actor_id, include_id=False):
-        """Get latest endorsement request status for record and actor.
+    def get_latest_status(cls, record_id, actor_id, include_id=False,
+                          request_type=constants.REQUEST_TYPE_ENDORSEMENT):
+        """Get latest request status for record, actor and request type.
         Optionally includes the notification ID of the latest reply with the matching status.
         
         Args:
             record_id: UUID of the record
             actor_id: ID of the actor
             include_id: If True, returns (status, reply_notification_id) tuple
+            request_type: 'endorsement' or 'review'; None matches any type
             
         Returns:
             str: latest status if include_id=False
             tuple: (status, reply_notification_id) if include_id=True
             None: if no request found
         """
-        # Get the latest endorsement request
+        # Get the latest request
+        query = cls.query.filter_by(
+            record_id=record_id,
+            actor_id=actor_id,
+        )
+        if request_type is not None:
+            query = query.filter_by(request_type=request_type)
         request = (
-            cls.query.filter_by(
-                record_id=record_id,
-                actor_id=actor_id,
-            )
+            query
             .order_by(cls.created.desc())
             .first()
         )
@@ -560,7 +585,11 @@ class EndorsementRequestModel(db.Model, Timestamp, DbOperationMixin):
                          .limit(1)
                          .scalar())
 
-        latest_status = latest_status or constants.WORKFLOW_STATUS_REQUEST_ENDORSEMENT
+        if not latest_status:
+            request_type = (db.session.query(cls.request_type)
+                            .filter_by(id=endorsement_request_id).scalar())
+            latest_status = constants.REQUEST_TYPE_INITIAL_STATUS.get(
+                request_type, constants.WORKFLOW_STATUS_REQUEST_ENDORSEMENT)
 
         cls.update(data={'latest_status': latest_status}, id=endorsement_request_id)
         return latest_status
