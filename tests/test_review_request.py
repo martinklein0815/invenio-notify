@@ -329,3 +329,10 @@ class TestReviewReplies:
         ActorModel.update(id=builder.actor.id, data={"capabilities": ["review"]})
         statuses = ActorModel.get_available_actors(record.id, "review")
         assert statuses[0]["status"] == constants.WORKFLOW_STATUS_ANNOUNCE_REVIEW
+
+
+def test_record_id_from_file_url(app):
+    from invenio_notify.utils.notify_utils import get_recid_by_record_url
+    assert get_recid_by_record_url(f"{LANDING}/files/1604.05363v1.pdf", app) == "abcde-12345"
+    assert get_recid_by_record_url(LANDING, app) == "abcde-12345"
+    assert get_recid_by_record_url(LANDING + "/", app) == "abcde-12345"

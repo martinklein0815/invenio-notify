@@ -33,11 +33,18 @@ def get_recid_by_record_url(url, app=None):
     # Try first regex pattern
     match = re_url_record_id.search(path)
     if match:
-        return match.group(1)
+        return _strip_sub_path(match.group(1))
     
     # Try alternate regex pattern
     match = re_url_record_id_alt.search(path)
     if match:
-        return match.group(1)
+        return _strip_sub_path(match.group(1))
     
     return None
+
+
+def _strip_sub_path(record_id):
+    """Record ids never contain a slash: '/records/<id>/files/x.pdf' -> '<id>'."""
+    if record_id:
+        record_id = record_id.split('/')[0]
+    return record_id or None

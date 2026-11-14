@@ -180,7 +180,13 @@ class InboxCOARBinding(COARNotifyServiceBinding):
             raise COARProcessFail(constants.STATUS_FORBIDDEN, 'Actor Id mismatch')
 
         records_service: RDMRecordService = current_rdm_records_service
-        records_service.record_cls.pid.resolve(record_id)
+        try:
+            records_service.record_cls.pid.resolve(record_id)
+        except PIDDoesNotExistError:
+            current_app.logger.warning(
+                f'Record [{record_id}] from notification {notification_id} not found, '
+                f'payload: {notification.to_jsonld()}')
+            raise
 
         raw = notification.to_jsonld()
         current_app.logger.debug(f'client input raw: {raw}')
