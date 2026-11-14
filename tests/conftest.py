@@ -325,5 +325,25 @@ def app_config(app_config, mock_datacite_client):
             label=_("Concept DOI"),
         ),
     ]
-    
+
+    # Newer invenio-rdm-records list "crossref" as a DOI provider by default; restrict the
+    # configured providers to the ones defined above.
+    import copy
+    for key, available in (("RDM_PERSISTENT_IDENTIFIERS", {"datacite", "external", "oai"}),
+                           ("RDM_PARENT_PERSISTENT_IDENTIFIERS", {"datacite"})):
+        pids = copy.deepcopy(app_config.get(key) or {})
+        for conf in pids.values():
+            conf["providers"] = [p for p in conf.get("providers", []) if p in available]
+        app_config[key] = pids
+
     return app_config
+
+
+@pytest.fixture()
+def cache(base_app):
+    """Cache fixture (no longer provided by newer pytest-invenio releases)."""
+    from invenio_cache import current_cache
+    try:
+        yield current_cache
+    finally:
+        current_cache.clear()
